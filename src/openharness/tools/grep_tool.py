@@ -16,7 +16,10 @@ class GrepToolInput(BaseModel):
     """Arguments for the grep tool."""
 
     pattern: str = Field(description="Regular expression to search for")
-    root: str | None = Field(default=None, description="Search root directory")
+    root: str | None = Field(
+        default=None,
+        description="Search root directory or file. For multiple roots, call grep separately per root.",
+    )
     file_glob: str = Field(default="**/*")
     case_sensitive: bool = Field(default=True)
     limit: int = Field(default=200, ge=1, le=2000)
@@ -36,6 +39,14 @@ class GrepTool(BaseTool):
 
     async def execute(self, arguments: GrepToolInput, context: ToolExecutionContext) -> ToolResult:
         root = _resolve_path(context.cwd, arguments.root) if arguments.root else context.cwd
+        if not root.exists():
+            return ToolResult(
+                output=(
+                    f"Search root does not exist: {root}\n"
+                    "If you intended multiple roots, call grep separately for each root."
+                ),
+                is_error=True,
+            )
         if root.is_file():
             display_base = _display_base(root, context.cwd)
             matches = await _rg_grep_file(
@@ -101,7 +112,10 @@ def _python_grep_files(
 ) -> str:
     # Python fallback (kept for portability).
     flags = 0 if case_sensitive else re.IGNORECASE
-    compiled = re.compile(pattern, flags)
+    try:
+        compiled = re.compile(pattern, flags)
+    except re.error as exc:
+        return f"(invalid regex pattern '{pattern}': {exc})"
     collected: list[str] = []
 
     for path in paths:
@@ -186,14 +200,14 @@ async def _rg_grep(
             cmd,
             cwd=root,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
         )
     else:
         process = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(root),
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
             limit=8 * 1024 * 1024,  # 8 MB per line — avoids LimitOverrunError on long lines
         )
 
@@ -254,14 +268,14 @@ async def _rg_grep_file(
             cmd,
             cwd=path.parent,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
         )
     else:
         process = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(path.parent),
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
             limit=8 * 1024 * 1024,  # 8 MB per line — avoids LimitOverrunError on long lines
         )
 
